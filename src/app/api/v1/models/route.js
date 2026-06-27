@@ -12,6 +12,13 @@ import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveCopilotModels } from "open-sse/services/copilotModels.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { capabilitiesFromServiceKind } from "open-sse/providers/capabilities.js";
+import {
+  fetchCompatibleModels,
+  inferKindFromUnknownModelId,
+  LLM_KIND,
+  runtimeCapabilitiesForModel,
+  stripKnownModelPrefix,
+} from "./catalog.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -57,17 +64,6 @@ const LIVE_MODEL_RESOLVERS = {
   }
 };
 
-const parseOpenAIStyleModels = (data) => {
-  if (Array.isArray(data)) return data;
-  return data?.data || data?.models || data?.results || [];
-};
-
-// Matches provider IDs that are upstream/cross-instance connections (contain a UUID suffix)
-const UPSTREAM_CONNECTION_RE = /[-_][0-9a-f]{8,}$/i;
-
-// LLM kind sentinel — combos/models with no explicit kind default to LLM
-const LLM_KIND = "llm";
-
 // Map per-model `type` field (in PROVIDER_MODELS) to service kind.
 // Models without `type` are treated as LLM.
 const MODEL_TYPE_TO_KIND = {
@@ -82,73 +78,6 @@ function modelKind(model) {
   const k = model?.kind || model?.type;
   if (!k) return LLM_KIND;
   return MODEL_TYPE_TO_KIND[k] || LLM_KIND;
-}
-
-// For dynamic/unknown model IDs (compatible providers, alias map, custom models)
-// fall back to provider-level kind matching when per-model type is unavailable.
-function inferKindFromUnknownModelId(modelId) {
-  const lower = String(modelId).toLowerCase();
-  if (/embed/.test(lower)) return "embedding";
-  if (/tts|speech|audio|voice/.test(lower)) return "tts";
-  if (/image|imagen|dall-?e|flux|sdxl|sd-|stable-diffusion/.test(lower)) return "image";
-  return LLM_KIND;
-}
-
-async function fetchCompatibleModelIds(connection) {
-  if (!connection?.apiKey) return [];
-
-  const baseUrl = typeof connection?.providerSpecificData?.baseUrl === "string"
-    ? connection.providerSpecificData.baseUrl.trim().replace(/\/$/, "")
-    : "";
-
-  if (!baseUrl) return [];
-
-  let url = `${baseUrl}/models`;
-  const headers = {
-    "Content-Type": "application/json",
-  };
-
-  if (isOpenAICompatibleProvider(connection.provider)) {
-    headers.Authorization = `Bearer ${connection.apiKey}`;
-  } else if (isAnthropicCompatibleProvider(connection.provider)) {
-    if (url.endsWith("/messages/models")) {
-      url = url.slice(0, -9);
-    } else if (url.endsWith("/messages")) {
-      url = `${url.slice(0, -9)}/models`;
-    }
-    headers["x-api-key"] = connection.apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-    headers.Authorization = `Bearer ${connection.apiKey}`;
-  } else {
-    return [];
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(url, {
-      method: "GET",
-      headers,
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) return [];
-
-    const data = await response.json();
-    const rawModels = parseOpenAIStyleModels(data);
-
-    return Array.from(
-      new Set(
-        rawModels
-          .map((model) => model?.id || model?.name || model?.model)
-          .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "")
-      )
-    );
-  } catch {
-    return [];
-  }
 }
 
 // Provider matches kindFilter when its serviceKinds intersect the requested kinds.
@@ -299,9 +228,17 @@ export async function buildModelsList(kindFilter) {
             ),
           )
         : providerModels.map((model) => model.id);
+      let liveModelMetadataById = new Map();
 
-      if (isCompatibleProvider && rawModelIds.length === 0 && !UPSTREAM_CONNECTION_RE.test(providerId)) {
-        rawModelIds = await fetchCompatibleModelIds(conn);
+      if (isCompatibleProvider && rawModelIds.length === 0) {
+        const liveModels = await fetchCompatibleModels(conn);
+        rawModelIds = liveModels.map((model) => model.id);
+        liveModelMetadataById = new Map(
+          liveModels.map((model) => [
+            stripKnownModelPrefix(model.id, [outputAlias, staticAlias, providerId]),
+            model,
+          ]),
+        );
       }
 
       // Config-driven live catalog override (e.g. Kiro returns dynamic
@@ -313,6 +250,12 @@ export async function buildModelsList(kindFilter) {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
             rawModelIds = live.models.map((m) => m.id);
+            liveModelMetadataById = new Map(
+              live.models.map((model) => [
+                stripKnownModelPrefix(model.id, [outputAlias, staticAlias, providerId]),
+                model,
+              ]),
+            );
           }
         } catch (err) {
           console.log(`Live model fetch failed for ${providerId}: ${err?.message || err}`);
@@ -320,18 +263,7 @@ export async function buildModelsList(kindFilter) {
       }
 
       const modelIds = rawModelIds
-        .map((modelId) => {
-          if (modelId.startsWith(`${outputAlias}/`)) {
-            return modelId.slice(outputAlias.length + 1);
-          }
-          if (modelId.startsWith(`${staticAlias}/`)) {
-            return modelId.slice(staticAlias.length + 1);
-          }
-          if (modelId.startsWith(`${providerId}/`)) {
-            return modelId.slice(providerId.length + 1);
-          }
-          return modelId;
-        })
+        .map((modelId) => stripKnownModelPrefix(modelId, [outputAlias, staticAlias, providerId]))
         .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "");
 
       const customModelKindById = new Map();
@@ -361,18 +293,7 @@ export async function buildModelsList(kindFilter) {
             fullModel.startsWith(`${providerId}/`)
           );
         })
-        .map((fullModel) => {
-          if (fullModel.startsWith(`${outputAlias}/`)) {
-            return fullModel.slice(outputAlias.length + 1);
-          }
-          if (fullModel.startsWith(`${staticAlias}/`)) {
-            return fullModel.slice(staticAlias.length + 1);
-          }
-          if (fullModel.startsWith(`${providerId}/`)) {
-            return fullModel.slice(providerId.length + 1);
-          }
-          return fullModel;
-        })
+        .map((fullModel) => stripKnownModelPrefix(fullModel, [outputAlias, staticAlias, providerId]))
         .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "");
 
       const mergedModelIds = Array.from(new Set([...modelIds, ...customModelIds, ...aliasModelIds]));
@@ -391,7 +312,9 @@ export async function buildModelsList(kindFilter) {
           object: "model",
           owned_by: outputAlias,
         };
-        const caps = capabilitiesFromServiceKind(customKind);
+        const caps = liveModelMetadataById.get(modelId)?.capabilities
+          || capabilitiesFromServiceKind(customKind)
+          || runtimeCapabilitiesForModel(providerId, modelId);
         if (caps) model.capabilities = caps;
         models.push(model);
       }
