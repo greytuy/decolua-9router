@@ -18,6 +18,7 @@ import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDeta
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
+import { createEmptyRetryStream } from "./chatCore/emptyStreamGuard.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { injectCaveman } from "../rtk/caveman.js";
@@ -57,7 +58,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, onUpstreamEmptyExhausted, onAccountRotate, chatCoreCtx, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -279,6 +280,17 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   trackPendingRequest(model, provider, connectionId, true);
   appendRequestLog({ model, provider, connectionId, status: "PENDING" }).catch(() => { });
 
+  // Expose post-translation body + active signal to the caller so a server-
+  // side account rotation hook can re-issue the same logical request with
+  // rotated credentials without re-running translation. Translation is
+  // provider/credentials-aware (projectId, session id), but the rotated
+  // executor's `transformRequest` re-reads credentials at execute-time, so
+  // reusing the body is safe across rotations.
+  if (chatCoreCtx) {
+    chatCoreCtx.translatedBody = translatedBody;
+    chatCoreCtx.streamControllerSignal = streamController.signal;
+  }
+
   const msgCount = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || translatedBody.request?.contents?.length || 0;
   log?.debug?.("REQUEST", `${provider.toUpperCase()} | ${model} | ${msgCount} msgs`);
 
@@ -422,6 +434,58 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     reqLogger.logError(new Error(message), finalBody || translatedBody);
     return createErrorResult(statusCode, errMsg, resetsAtMs);
+  }
+
+  // Antigravity empty-stream guard — oh-my-pi parity: bytes (thinking included)
+  // stream to the client live; emptiness is judged per upstream attempt and an
+  // empty attempt is retried in-stream with the identical request, spliced into
+  // the same client message (see emptyStreamGuard.js). Exhaustion surfaces as an
+  // in-stream error event (retryable by Claude Code); onUpstreamEmptyExhausted
+  // lets the caller bench the account so the client's retry rotates to the next
+  // one (#2188, #2229, #2250, #2259, #2431).
+  if (provider === "antigravity" && stream && providerResponse.body) {
+    let reexecute = async () => {
+      const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+      if (!retryResult.response.ok) {
+        const { statusCode, message } = await parseUpstreamError(retryResult.response, executor);
+        throw new Error(`[${statusCode}] ${message}`);
+      }
+      if (!retryResult.response.body) throw new Error("upstream returned no body");
+      return retryResult.response.body;
+    };
+    providerResponse = new Response(
+      createEmptyRetryStream({
+        body: providerResponse.body,
+        reexecute,
+        signal: streamController.signal,
+        log,
+        onExhausted: (reason, { upstreamError } = {}) => {
+          if (!onUpstreamEmptyExhausted) return;
+          // Quota-style exhaustion carries the reset time only inside the error
+          // message ("Your quota will reset after 2h7m23s") — bench precisely.
+          const resetMs = executor.parseRetryFromErrorMessage?.(upstreamError?.message || reason);
+          return onUpstreamEmptyExhausted(
+            formatProviderError(new Error(reason), provider, model, HTTP_STATUS.BAD_GATEWAY),
+            resetMs ? Date.now() + resetMs : undefined
+          );
+        },
+        // Server-side account recovery. Returns null when no more accounts are
+        // eligible, in which case the exhaustion event surfaces to the client.
+        // Returns { reexecute } with a NEW re-execution factory bound to the
+        // next account's credentials/proxy/projectId; the empty-stream guard
+        // splices it into the same client stream transparently.
+        onAccountRotate: onAccountRotate ? async (reason, meta) => {
+          try {
+            const next = await onAccountRotate({ reason, upstreamError: meta?.upstreamError || null, translatedBody, model, stream, proxyOptions });
+            return next || null;
+          } catch (error) {
+            log?.warn?.("STREAM", `ANTIGRAVITY | onAccountRotate threw: ${error?.message || error}`);
+            return null;
+          }
+        } : undefined,
+      }),
+      { status: providerResponse.status, headers: providerResponse.headers }
+    );
   }
 
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
