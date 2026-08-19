@@ -1,3 +1,9 @@
+# Unreleased
+
+## Features
+- **CLI tools**: add Oh My Pi (omp) (can1357/oh-my-pi) — writes `~/.omp/agent/models.yml` and optionally `~/.omp/agent/config.yml` via a YAML-aware writer that preserves user comments and unrelated providers. Dashboard → CLI Tools → Oh My Pi → Apply.
+- **CLI tools**: Oh My Pi card can assign all official omp roles (`default`, `smol`, `slow`, `vision`, `plan`, `designer`, `commit`, `tiny`, `task`, `advisor`) to selected 9Router models. Unset and Reset leave foreign-provider and unofficial custom roles alone.
+
 # v0.5.55 (2026-08-14)
 
 ## Features
@@ -102,6 +108,7 @@
 - **Qoder**: support PAT (Personal Access Token) connections end-to-end, alongside
   OAuth device flow
 - **CLI tools**: add OpenDesign (manalkaff/opendesign) support
+- **CLI tools**: add Oh My Pi (omp) (can1357/oh-my-pi) — full model catalog + role management. Add/remove models with capabilities (context window, max output, thinking mode) written to ~/.omp/agent/models.yml; assign all 10 omp roles plus custom roles at global or project scope (~/.omp/agent/config.yml or <project>/.omp/config.yml, following omp modelRoleStorage). YAML-aware writer preserves comments, unrelated providers, and foreign-provider role assignments
 - **Headroom**: report effective payload savings (tool schema/history bytes broken
   out, byte-savings % reflects actual outbound reduction)
 - **Ollama**: Cloud quota tracker (session + weekly) + proactive background OAuth
@@ -214,7 +221,6 @@
 - **Alicode-intl**: split into Coding Plan + Model Studio providers
 - **Cursor**: HTTP/2 AgentService support + version bump 3.12.17
 - **Dashboard**: cut duplicate API/icon spam, lazy-load provider assets
-
 
 # v0.5.35 (2026-07-16)
 
