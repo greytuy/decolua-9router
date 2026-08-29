@@ -103,6 +103,8 @@ export default function ProvidersPage() {
   const [showAddCompatibleModal, setShowAddCompatibleModal] = useState(false);
   const [showAddAnthropicCompatibleModal, setShowAddAnthropicCompatibleModal] =
     useState(false);
+  const [showAddMultiCompatibleModal, setShowAddMultiCompatibleModal] =
+    useState(false);
   const [testingMode, setTestingMode] = useState(null);
   const [testResults, setTestResults] = useState(null);
   const notify = useNotificationStore();
@@ -279,6 +281,17 @@ export default function ProvidersPage() {
     }))
     .filter((p) => matchSearch(p.name));
 
+  const multiCompatibleProviders = providerNodes
+    .filter((node) => node.type === "multi-compatible")
+    .map((node) => ({
+      id: node.id,
+      name: node.name || "Multi-protocol Compatible",
+      color: "#7C3AED",
+      textIcon: "MP",
+      apiType: "multi",
+    }))
+    .filter((p) => matchSearch(p.name));
+
   // Dual-auth providers (oauth + apikey) store API keys as authType "apikey"
   // (and sometimes "api_key"). Card stats must count both so totals match detail.
   // kiro has no authModes in registry but accepts both (headless uses "api_key").
@@ -361,7 +374,8 @@ export default function ProvidersPage() {
     freeTierEntries.length > 0 ||
     apikeyEntries.length > 0 ||
     compatibleProviders.length > 0 ||
-    anthropicCompatibleProviders.length > 0;
+    anthropicCompatibleProviders.length > 0 ||
+    multiCompatibleProviders.length > 0;
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
@@ -374,15 +388,24 @@ export default function ProvidersPage() {
         </div>
       )}
 
-      {/* Custom Providers (OpenAI/Anthropic Compatible) — dynamic */}
+      {/* Custom Providers — dynamic */}
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-lg sm:text-xl font-semibold flex items-center gap-2 leading-tight">
-            Custom Providers (OpenAI/Anthropic Compatible){" "}
+            Custom Providers
           </h2>
           <div className="grid grid-cols-1 gap-2 sm:flex sm:w-auto">
             <Button
               size="sm"
+              icon="add"
+              onClick={() => setShowAddMultiCompatibleModal(true)}
+              className="w-full sm:w-auto"
+            >
+              Add Multi-protocol
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
               icon="add"
               onClick={() => setShowAddAnthropicCompatibleModal(true)}
               className="w-full sm:w-auto"
@@ -401,27 +424,30 @@ export default function ProvidersPage() {
           </div>
         </div>
         {compatibleProviders.length === 0 &&
-        anthropicCompatibleProviders.length === 0 ? (
+        anthropicCompatibleProviders.length === 0 &&
+        multiCompatibleProviders.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-2 border border-dashed border-border rounded-xl text-text-muted text-sm">
             <span className="material-symbols-outlined text-[18px]">extension</span>
-            <span>No custom providers — use buttons above to add OpenAI/Anthropic compatible endpoints</span>
+            <span>No custom providers. Use the buttons above to add one.</span>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
-            {[...compatibleProviders, ...anthropicCompatibleProviders].map(
-              (info) => (
-                <ApiKeyProviderCard
-                  key={info.id}
-                  providerId={info.id}
-                  provider={info}
-                  stats={getProviderStats(info.id, "apikey")}
-                  authType="compatible"
-                  onToggle={(active) =>
-                    handleToggleProvider(info.id, "apikey", active)
-                  }
-                />
-              ),
-            )}
+            {[
+              ...multiCompatibleProviders,
+              ...compatibleProviders,
+              ...anthropicCompatibleProviders,
+            ].map((info) => (
+              <ApiKeyProviderCard
+                key={info.id}
+                providerId={info.id}
+                provider={info}
+                stats={getProviderStats(info.id, "apikey")}
+                authType="compatible"
+                onToggle={(active) =>
+                  handleToggleProvider(info.id, "apikey", active)
+                }
+              />
+            ))}
           </div>
         )}
       </div>
@@ -623,6 +649,15 @@ export default function ProvidersPage() {
           setShowAddAnthropicCompatibleModal(false);
         }}
       />
+      <AddCompatibleModal
+        variant="multi"
+        isOpen={showAddMultiCompatibleModal}
+        onClose={() => setShowAddMultiCompatibleModal(false)}
+        onCreated={(node) => {
+          setProviderNodes((prev) => [...prev, node]);
+          setShowAddMultiCompatibleModal(false);
+        }}
+      />
 
       {/* Test Results Modal */}
       {testResults && (
@@ -792,6 +827,7 @@ function ApiKeyProviderCard({
   };
 
   const getIconPath = () => {
+    if (provider.apiType === "multi") return null;
     if (isCompatible && provider.apiType)
       return provider.apiType === "responses"
         ? "/providers/oai-r.png"
@@ -842,9 +878,11 @@ function ApiKeyProviderCard({
                     {getStatusDisplay(connected, error, errorCode)}
                     {isCompatible && (
                       <Badge variant="default" size="sm">
-                        {provider.apiType === "responses"
-                          ? "Responses"
-                          : "Chat"}
+                        {provider.apiType === "multi"
+                          ? "Chat + Messages"
+                          : provider.apiType === "responses"
+                            ? "Responses"
+                            : "Chat"}
                       </Badge>
                     )}
                     {isAnthropicCompatible && (
