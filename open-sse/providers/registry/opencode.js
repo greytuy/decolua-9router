@@ -26,4 +26,8 @@ export default {
   ],
   modelsFetcher: { url: "https://opencode.ai/zen/v1/models", type: "opencode-free" },
   passthroughModels: true,
+  features: {
+    usage: true,
+    usageApikey: true,
+  },
 };
