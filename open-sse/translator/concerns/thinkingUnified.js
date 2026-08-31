@@ -355,8 +355,6 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
 export function applyThinking(targetFormat, model, body, provider = null, intent = undefined, credentials = null) {
   if (!body || typeof body !== "object") return body;
 
-  if (!body || typeof body !== "object") return body;
-
   const { cleanModel, override } = parseSuffix(model);
   const cfg = override || intent || extractThinking(body);
   const caps = getCapabilitiesForModel(provider, cleanModel);
