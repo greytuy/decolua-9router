@@ -39,8 +39,14 @@ const PATTERN_THINKING = [
   { provider: "codex", pattern: "*gpt-5.6-terra*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-luna*", levels: CODEX_GPT_5_6_LEVELS },
   { pattern: "*codex*", levels: ["low", "medium", "high", "xhigh"] }, // codex cannot disable thinking
+  // alitp-intl: enums probed from upstream 400 messages.
+  { provider: "alitp-intl", pattern: "qwen3.8-*", levels: [...L.openai, "max"] },
+  { provider: "alitp-intl", pattern: "glm-5.2", levels: [...L.openai, "max"] },
+  { provider: "alitp-intl", pattern: "deepseek-v4-pro-0813", levels: [...L.openai, "max"] },
+  { provider: "alitp-intl", pattern: "deepseek-v4-flash-0731", levels: [...L.openai, "max"] },
+  // rejects none/minimal (thinkingCanDisable:false)
+  { provider: "alitp-intl", pattern: "deepseek-v4-pro", levels: ["low", "medium", "high", "xhigh", "max"] },
 ];
-
 // Returns valid thinking levels for a model, or null when the model has no reasoning.
 export function getThinkingLevels(provider, model) {
   if (provider === "kiro" && resolveKiroEffortPath(model) === null) return null;

@@ -1027,7 +1027,8 @@
           "header": "x-api-key",
           "scheme": "raw",
           "anthropicVersion": true
-        }
+        },
+        "thinkingFormat": "claude-budget"
       }
     ]
   }

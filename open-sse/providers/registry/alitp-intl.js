@@ -39,6 +39,7 @@ export default {
       format: "claude",
       baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1/messages",
       auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true },
+      thinkingFormat: "claude-budget", // native thinking, not compatible-mode reasoning_effort
     },
   ],
   models: [

@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import REGISTRY from "../../open-sse/providers/registry/index.js";
 import { PROVIDERS, PROVIDER_MEDIA, PROVIDER_MODELS } from "../../open-sse/providers/index.js";
 import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
+import { getThinkingLevels } from "../../open-sse/providers/thinkingLevels.js";
+import { applyThinking } from "../../open-sse/translator/concerns/thinkingUnified.js";
+import { FORMATS } from "../../open-sse/translator/formats.js";
 import { getTtsVoicesForModel } from "../../open-sse/config/ttsModels.js";
 import { getImageAdapter } from "../../open-sse/handlers/imageProviders/index.js";
 import { FORMAT_HANDLERS } from "../../open-sse/handlers/ttsProviders/genericFormats.js";
@@ -77,7 +80,7 @@ describe("Alibaba Token Plan provider", () => {
       vision: true,
       videoInput: true,
       reasoning: true,
-      thinkingFormat: "qwen",
+      thinkingFormat: "openai",
       contextWindow: 1000000,
       maxOutput: 131072,
     });
@@ -96,7 +99,7 @@ describe("Alibaba Token Plan provider", () => {
       vision: false,
       audioInput: false,
       reasoning: true,
-      thinkingFormat: "qwen",
+      thinkingFormat: "openai",
       contextWindow: 1048576,
       maxOutput: 131072,
     });
@@ -123,6 +126,62 @@ describe("Alibaba Token Plan provider", () => {
       pdf: true,
       maxOutput: 131072,
     });
+  });
+
+  it("exposes each model's probed reasoning_effort levels", () => {
+    const levels = {
+      "qwen3.8-max": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      "qwen3.8-flash": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      "qwen3.7-max": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "qwen3.7-plus": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "qwen3.6-flash": ["none", "minimal", "low", "medium", "high", "xhigh"],
+      "glm-5.2": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      "deepseek-v4-pro": ["low", "medium", "high", "xhigh", "max"],
+      "deepseek-v4-pro-0813": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      "deepseek-v4-flash-0731": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    };
+    for (const [id, expected] of Object.entries(levels)) {
+      expect(getThinkingLevels("alitp-intl", id)).toEqual(expected);
+    }
+  });
+
+  it("clamps unsupported levels to each model's enum", () => {
+    const apply = (model, intent, credentials) => {
+      const body = {};
+      applyThinking(FORMATS.OPENAI, model, body, "alitp-intl", intent, credentials);
+      return body.reasoning_effort;
+    };
+    const none = { mode: "none" };
+    const max = { mode: "level", level: "max" };
+    const ultra = { mode: "level", level: "ultra" };
+    expect(apply("deepseek-v4-pro", none)).toBe("low");
+    expect(apply("qwen3.7-max", max)).toBe("xhigh");
+    expect(apply("qwen3.8-max", max)).toBe("max");
+    expect(apply("qwen3.8-max", ultra)).toBe("max");
+    expect(apply("qwen3.7-max", ultra)).toBe("xhigh");
+  });
+
+  it("normalizes thinking per transport surface", () => {
+    const intent = { mode: "level", level: "high" };
+    const openaiBody = {};
+    applyThinking(FORMATS.OPENAI, "qwen3.8-max", openaiBody, "alitp-intl", intent);
+    expect(openaiBody.reasoning_effort).toBe("high");
+    expect(openaiBody.thinking).toBeUndefined();
+    // A claude-format target always rides the claude transport (default surface
+    // is openai), so its transport-level claude-budget format applies.
+    const claudeBody = {};
+    applyThinking(FORMATS.CLAUDE, "qwen3.8-max", claudeBody, "alitp-intl", intent, {
+      runtimeTransport: { format: "claude", thinkingFormat: "claude-budget" },
+    });
+    expect(claudeBody.thinking).toMatchObject({ type: "enabled" });
+    expect(claudeBody.thinking.budget_tokens).toBeGreaterThan(0);
+    expect(claudeBody.reasoning_effort).toBeUndefined();
+    // none on a cannot-disable model → minimal thinking at the Anthropic floor.
+    const offBody = {};
+    applyThinking(FORMATS.CLAUDE, "deepseek-v4-pro", offBody, "alitp-intl", { mode: "none" }, {
+      runtimeTransport: { format: "claude", thinkingFormat: "claude-budget" },
+    });
+    expect(offBody.thinking).toEqual({ type: "enabled", budget_tokens: 1024 });
   });
 
   it("claims web search on every chat model (Responses surface)", () => {
@@ -166,5 +225,6 @@ describe("Alibaba Token Plan provider", () => {
     const claude = entry.transports.find((t) => t.format === "claude");
     expect(claude.baseUrl).toContain("/apps/anthropic/v1/messages");
     expect(claude.auth).toMatchObject({ header: "x-api-key", scheme: "raw", anthropicVersion: true });
+    expect(claude.thinkingFormat).toBe("claude-budget");
   });
 });
